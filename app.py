@@ -1,71 +1,82 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Portfolio Management App", layout="wide")
+st.set_page_config(page_title="Portfolio Analysis App", layout="wide")
 
-st.title("📊 Smart Portfolio Management App")
-st.markdown("Upload your stock portfolio CSV file to view insights, metrics, and risk analysis.")
+st.title("📊 Portfolio Management and Risk Analysis App")
 
-st.sidebar.header("Upload Your Portfolio Data")
-uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
+uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.write("### Uploaded Data Preview", df.head())
+if uploaded_file:
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception:
+        df = pd.read_excel(uploaded_file)
 
-    # --- Smart column detection ---
-    df.columns = [c.strip() for c in df.columns]
-    date_col = [c for c in df.columns if 'date' in c.lower()]
-    price_col = [c for c in df.columns if any(x in c.lower() for x in ['ltp', 'close', 'price', 'adj close'])]
+    st.write("### Raw Data Preview")
+    st.dataframe(df.head())
 
-    if date_col and price_col:
-        df.rename(columns={date_col[0]: 'Date', price_col[0]: 'ltp'}, inplace=True)
-        df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
-        df = df.dropna(subset=["Date", "ltp"])
-        df = df.sort_values("Date")
-        df["Returns"] = df["ltp"].pct_change()
+    # Standardize column names
+    df.columns = [c.strip().lower() for c in df.columns]
 
-        st.write("### 📈 Descriptive Statistics")
-        st.dataframe(df["Returns"].describe().to_frame().T)
+    # Try to detect Date and LTP columns
+    date_col = next((col for col in df.columns if "date" in col), None)
+    ltp_col = next((col for col in df.columns if "ltp" in col or "close" in col), None)
 
-        # Portfolio metrics
-        mean_return = df["Returns"].mean()
-        volatility = df["Returns"].std()
-        risk_free_rate = 0.05 / 252  # daily risk-free rate
-        sharpe_ratio = (mean_return - risk_free_rate) / volatility if volatility != 0 else np.nan
-        beta = np.cov(df["Returns"].dropna(), df["Returns"].dropna())[0][1] / np.var(df["Returns"].dropna()) if np.var(df["Returns"].dropna()) != 0 else np.nan
-        jensen_alpha = mean_return - (risk_free_rate + beta * (mean_return - risk_free_rate)) if not np.isnan(beta) else np.nan
-        treynor_ratio = (mean_return - risk_free_rate) / beta if beta not in [0, np.nan] else np.nan
-
-        st.write("### ⚙️ Portfolio Metrics")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Mean Daily Return", f"{mean_return:.5f}")
-        col2.metric("Volatility", f"{volatility:.5f}")
-        col3.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-
-        col4, col5 = st.columns(2)
-        col4.metric("Jensen's Alpha", f"{jensen_alpha:.5f}")
-        col5.metric("Treynor Ratio", f"{treynor_ratio:.5f}")
-
-        # Graphical Analysis
-        st.write("### 📊 Portfolio Return Trend")
-        st.line_chart(df.set_index("Date")["ltp"])
-
-        st.write("### 📉 Rolling Mean (+3 Days)")
-        df["Rolling_Mean"] = df["ltp"].rolling(window=3).mean()
-        st.line_chart(df.set_index("Date")[["ltp", "Rolling_Mean"]])
-
-        # Suggestions
-        st.write("### 💡 Summary & Suggestions")
-        if sharpe_ratio > 1:
-            st.success("✅ Great! Your portfolio offers strong risk-adjusted returns.")
-        elif sharpe_ratio > 0.5:
-            st.info("⚖️ Decent performance. Consider diversification for better stability.")
-        else:
-            st.warning("⚠️ Portfolio risk-adjusted returns are weak. Optimize asset allocation.")
+    if not date_col or not ltp_col:
+        st.error("❌ 'Date' or 'LTP/CLOSE' columns not found in uploaded file. Please include them.")
     else:
-        st.error("❌ Could not detect 'Date' or 'LTP/Close' columns. Please check your file headers.")
-else:
-    st.info("👆 Upload a CSV file to begin analysis.")
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df = df.dropna(subset=[date_col])
+        df = df.sort_values(by=date_col)
+
+        # Convert numeric columns safely
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='ignore')
+
+        df = df.dropna(subset=[ltp_col])
+        df[ltp_col] = pd.to_numeric(df[ltp_col], errors='coerce')
+
+        st.success("✅ Data processed successfully!")
+        st.write("### Descriptive Statistics")
+        st.write(df.describe())
+
+        # Calculate daily returns
+        df['returns'] = df[ltp_col].pct_change()
+        mean_return = df['returns'].mean()
+        std_dev = df['returns'].std()
+        sharpe_ratio = mean_return / std_dev if std_dev != 0 else np.nan
+        risk_free_rate = 0.05 / 252
+        excess_return = df['returns'] - risk_free_rate
+        beta = np.cov(df['returns'].dropna(), excess_return.dropna())[0, 1] / np.var(excess_return.dropna())
+        treynor_ratio = mean_return / beta if beta != 0 else np.nan
+        jensen_alpha = mean_return - (risk_free_rate + beta * (mean_return - risk_free_rate))
+
+        st.write("### 📈 Portfolio Metrics")
+        st.write({
+            "Mean Daily Return": round(mean_return, 6),
+            "Standard Deviation": round(std_dev, 6),
+            "Sharpe Ratio": round(sharpe_ratio, 3),
+            "Treynor Ratio": round(treynor_ratio, 3),
+            "Jensen’s Alpha": round(jensen_alpha, 3),
+            "Portfolio Beta": round(beta, 3)
+        })
+
+        st.write("### 📊 Visual Analysis")
+        fig, ax = plt.subplots()
+        ax.plot(df[date_col], df[ltp_col], label="LTP", color="blue")
+        ax.set_title("LTP Over Time")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("LTP")
+        st.pyplot(fig)
+
+        st.write("### Suggestions")
+        if sharpe_ratio > 1:
+            st.success("Good risk-adjusted returns. Portfolio is performing efficiently.")
+        elif sharpe_ratio > 0.5:
+            st.info("Moderate performance. Review diversification and rebalancing strategy.")
+        else:
+            st.warning("Low risk-adjusted return. Consider revising asset allocation.")
+
